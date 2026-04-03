@@ -90,9 +90,12 @@ class RefreshTokenRegistrationEngineTests(unittest.TestCase):
 
         register_client.register_complete_flow.assert_called_once()
         oauth_client.login_and_get_tokens.assert_called_once()
+        register_kwargs = register_client.register_complete_flow.call_args.kwargs
+        self.assertTrue(register_kwargs["stop_before_about_you_submission"])
         login_kwargs = oauth_client.login_and_get_tokens.call_args.kwargs
         self.assertTrue(login_kwargs["prefer_passwordless_login"])
         self.assertFalse(login_kwargs["allow_phone_verification"])
+        self.assertTrue(login_kwargs["complete_about_you_if_needed"])
         self.assertEqual(login_kwargs["device_id"], "device-fixed")
         self.assertEqual(login_kwargs["login_source"], "post_register_workspace_recovery")
 
@@ -377,6 +380,43 @@ class OAuthClientPasswordlessTests(unittest.TestCase):
         kwargs = client.session.post.call_args.kwargs
         self.assertNotIn("json", kwargs)
         self.assertNotIn("data", kwargs)
+
+    def test_login_and_get_tokens_submits_about_you_when_configured(self):
+        client = self._make_client()
+        about_you_state = FlowState(
+            page_type="about_you",
+            continue_url="https://auth.openai.com/about-you",
+            current_url="https://auth.openai.com/about-you",
+        )
+        consent_state = FlowState(
+            page_type="consent",
+            continue_url="https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+            current_url="https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+        )
+
+        with mock.patch.object(client, "_bootstrap_oauth_session", return_value="https://auth.openai.com/log-in"), \
+            mock.patch.object(client, "_submit_authorize_continue", return_value=about_you_state), \
+            mock.patch.object(client, "_submit_about_you_create_account", return_value=consent_state) as submit_about_you, \
+            mock.patch.object(client, "_oauth_submit_workspace_and_org", return_value=("auth-code", None)), \
+            mock.patch.object(client, "_exchange_code_for_tokens", return_value={"access_token": "at"}):
+            tokens = client.login_and_get_tokens(
+                "user@example.com",
+                "Secret123!",
+                "device-fixed",
+                prefer_passwordless_login=True,
+                allow_phone_verification=False,
+                complete_about_you_if_needed=True,
+                first_name="Ivy",
+                last_name="Stone",
+                birthdate="1990-01-02",
+                skymail_client=mock.Mock(),
+            )
+
+        self.assertEqual(tokens["access_token"], "at")
+        submit_about_you.assert_called_once()
+        self.assertEqual(submit_about_you.call_args.args[0], "Ivy")
+        self.assertEqual(submit_about_you.call_args.args[1], "Stone")
+        self.assertEqual(submit_about_you.call_args.args[2], "1990-01-02")
 
 
 if __name__ == "__main__":

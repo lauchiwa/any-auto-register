@@ -317,6 +317,7 @@ def create_mailbox(
             project_code=extra.get("luckmail_project_code", ""),
             email_type=extra.get("luckmail_email_type", ""),
             domain=extra.get("luckmail_domain", ""),
+            proxy=proxy,
         )
     else:  # laoudo
         return LaoudoMailbox(
@@ -2428,6 +2429,7 @@ class LuckMailMailbox(BaseMailbox):
         project_code: str = "",
         email_type: str = "",
         domain: str = "",
+        proxy: str = None,
     ):
         if not base_url or not api_key:
             raise RuntimeError(
@@ -2438,6 +2440,7 @@ class LuckMailMailbox(BaseMailbox):
         self._client = LuckMailClient(
             base_url=base_url,
             api_key=api_key,
+            proxy_url=proxy,
         )
         self._project_code = project_code
         self._email_type = email_type or None

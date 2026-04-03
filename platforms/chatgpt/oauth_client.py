@@ -261,6 +261,10 @@ class OAuthClient:
         target = f"{state.continue_url} {state.current_url}".lower()
         return state.page_type == "add_phone" or "add-phone" in target
 
+    def _state_is_about_you(self, state: FlowState):
+        target = f"{state.continue_url} {state.current_url}".lower()
+        return state.page_type == "about_you" or "about-you" in target
+
     def _state_requires_navigation(self, state: FlowState):
         method = (state.method or "GET").upper()
         if method != "GET":
@@ -716,6 +720,93 @@ class OAuthClient:
             self._set_error(f"触发 passwordless OTP 异常: {e}")
             return None
 
+    def _submit_about_you_create_account(
+        self,
+        first_name,
+        last_name,
+        birthdate,
+        device_id,
+        *,
+        user_agent=None,
+        sec_ch_ua=None,
+        impersonate=None,
+        referer=None,
+    ):
+        """在 OAuth 登录态命中 about_you 后提交资料，完成账户创建。"""
+        self._log("步骤5: 命中 about_you，提交姓名和生日完成注册")
+
+        full_name = f"{str(first_name or '').strip()} {str(last_name or '').strip()}".strip()
+        if not full_name or not str(birthdate or "").strip():
+            self._set_error("about_you 资料不完整: 缺少姓名或生日")
+            return None
+
+        sentinel_token = build_sentinel_token(
+            self.session,
+            device_id,
+            flow="oauth_create_account",
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            impersonate=impersonate,
+        )
+        if not sentinel_token:
+            self._set_error("无法获取 sentinel token (oauth_create_account)")
+            return None
+
+        request_url = f"{self.oauth_issuer}/api/accounts/create_account"
+        headers = self._headers(
+            request_url,
+            user_agent=user_agent,
+            sec_ch_ua=sec_ch_ua,
+            accept="application/json",
+            referer=referer or f"{self.oauth_issuer}/about-you",
+            origin=self.oauth_issuer,
+            content_type="application/json",
+            fetch_site="same-origin",
+            extra_headers={
+                "oai-device-id": device_id,
+                "openai-sentinel-token": sentinel_token,
+            },
+        )
+        headers.update(generate_datadog_trace())
+
+        payload = {
+            "name": full_name,
+            "birthdate": str(birthdate).strip(),
+        }
+
+        try:
+            kwargs = {
+                "json": payload,
+                "headers": headers,
+                "timeout": 30,
+                "allow_redirects": False,
+            }
+            if impersonate:
+                kwargs["impersonate"] = impersonate
+
+            self._browser_pause()
+            r = self.session.post(request_url, **kwargs)
+            self._log(f"/create_account -> {r.status_code}")
+
+            if r.status_code != 200:
+                self._set_error(f"about_you 提交失败: {r.status_code} - {r.text[:180]}")
+                return None
+
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+
+            flow_state = self._state_from_payload(
+                data,
+                current_url=str(r.url) or request_url,
+            )
+            self._log(f"about_you 提交成功 {describe_flow_state(flow_state)}")
+            return flow_state
+        except Exception as e:
+            self._set_error(f"about_you 提交异常: {e}")
+            return None
+
     def _recreate_session(self):
         """重建会话，确保恢复链路使用全新 cookie 容器。"""
         self.session = curl_requests.Session()
@@ -733,6 +824,10 @@ class OAuthClient:
         skymail_client=None,
         prefer_passwordless_login=False,
         allow_phone_verification=True,
+        complete_about_you_if_needed=False,
+        first_name="",
+        last_name="",
+        birthdate="",
         login_source="",
         _recovery_depth=0,
     ):
@@ -749,6 +844,10 @@ class OAuthClient:
             skymail_client: Skymail 客户端（用于获取 OTP，如果需要）
             prefer_passwordless_login: 是否强制走 passwordless OTP 链路
             allow_phone_verification: add_phone 后是否允许进入手机号验证码分支
+            complete_about_you_if_needed: 命中 about_you 后是否自动提交资料完成注册
+            first_name: about_you 名字
+            last_name: about_you 姓氏
+            birthdate: about_you 生日，格式 YYYY-MM-DD
             login_source: 当前登录场景，仅用于日志
 
         Returns:
@@ -919,6 +1018,25 @@ class OAuthClient:
                 state = next_state
                 continue
 
+            if complete_about_you_if_needed and self._state_is_about_you(state):
+                next_state = self._submit_about_you_create_account(
+                    first_name,
+                    last_name,
+                    birthdate,
+                    device_id,
+                    user_agent=user_agent,
+                    sec_ch_ua=sec_ch_ua,
+                    impersonate=impersonate,
+                    referer=state.current_url or state.continue_url or referer,
+                )
+                if not next_state:
+                    if not self.last_error:
+                        self._set_error("about_you 提交后未进入下一步 OAuth 状态")
+                    return None
+                referer = state.current_url or referer
+                state = next_state
+                continue
+
             if self._state_is_add_phone(state):
                 if not allow_phone_verification:
                     if self._state_supports_workspace_resolution(state):
@@ -940,6 +1058,10 @@ class OAuthClient:
                             skymail_client=skymail_client,
                             prefer_passwordless_login=prefer_passwordless_login,
                             allow_phone_verification=allow_phone_verification,
+                            complete_about_you_if_needed=complete_about_you_if_needed,
+                            first_name=first_name,
+                            last_name=last_name,
+                            birthdate=birthdate,
                             login_source=(
                                 f"{login_source}:add_phone_recovery"
                                 if login_source

@@ -824,7 +824,14 @@ class ChatGPTClient:
             return False, str(e)
 
     def register_complete_flow(
-        self, email, password, first_name, last_name, birthdate, skymail_client
+        self,
+        email,
+        password,
+        first_name,
+        last_name,
+        birthdate,
+        skymail_client,
+        stop_before_about_you_submission=False,
     ):
         """
         完整的注册流程（基于原版 run_register 方法）
@@ -939,6 +946,10 @@ class ChatGPTClient:
                 continue
 
             if self._state_is_about_you(state):
+                if stop_before_about_you_submission:
+                    self.last_registration_state = state
+                    self._log("注册链路已到 about_you，按 interrupt 流程停止，交由 OAuth 会话完成资料提交")
+                    return True, "pending_about_you_submission"
                 if account_created:
                     return False, "填写信息阶段重复进入"
                 success, next_state = self.create_account(

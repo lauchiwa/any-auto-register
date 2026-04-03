@@ -370,6 +370,7 @@ class RefreshTokenRegistrationEngine:
                         last_name,
                         birthdate,
                         email_adapter,
+                        stop_before_about_you_submission=True,
                     )
 
                     if not registered:
@@ -388,7 +389,10 @@ class RefreshTokenRegistrationEngine:
                         )
                         self._log(f"切换原因: {registration_message}")
                     else:
-                        self._log("注册状态机已完成，进入全新 OAuth session 获取 workspace / RT")
+                        if registration_message == "pending_about_you_submission":
+                            self._log("注册状态机已推进至 about_you，按 interrupt 新链路改由 OAuth 会话提交资料")
+                        else:
+                            self._log("注册状态机已完成，进入全新 OAuth session 获取 workspace / RT")
 
                     oauth_client = self._build_oauth_client()
                     self._log("3. 新开 OAuth session，按 screen_hint=login + passwordless OTP 登录...")
@@ -402,6 +406,10 @@ class RefreshTokenRegistrationEngine:
                         skymail_client=email_adapter,
                         prefer_passwordless_login=True,
                         allow_phone_verification=False,
+                        complete_about_you_if_needed=True,
+                        first_name=first_name,
+                        last_name=last_name,
+                        birthdate=birthdate,
                         login_source=(
                             "existing_account_recovery"
                             if source == "login"
